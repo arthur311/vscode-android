@@ -78,7 +78,8 @@ class FileProvider extends ChangeNotifier {
       _fileTree = await _buildFileTree(path);
       await _saveLastDirectory(path);
     } catch (e) {
-      _errorMessage = 'Cannot open directory: $e';
+      _errorMessage = _friendlyError(e);
+      _fileTree = [];
     }
 
     _isLoading = false;
@@ -93,13 +94,32 @@ class FileProvider extends ChangeNotifier {
     if (!node.isDirectory) return;
     if (node.isExpanded) {
       node.isExpanded = false;
+      node.listError = null;
     } else {
       node.isExpanded = true;
-      if (node.children.isEmpty) {
-        node.children = await _buildFileTree(node.path);
+      if (node.children.isEmpty && node.listError == null) {
+        try {
+          node.children = await _buildFileTree(node.path);
+        } catch (e) {
+          // Surface the error on the node so the UI can show it inline.
+          node.listError = _friendlyError(e);
+          node.children = [];
+        }
       }
     }
     notifyListeners();
+  }
+
+  /// Converts a raw exception into a short, user-readable message.
+  String _friendlyError(Object e) {
+    final msg = e.toString();
+    if (msg.contains('Permission denied') || msg.contains('EACCES')) {
+      return 'Permission denied — grant "All files access" in Settings';
+    }
+    if (msg.contains('does not exist') || msg.contains('ENOENT')) {
+      return 'Folder no longer exists';
+    }
+    return 'Cannot read folder: $msg';
   }
 
   Future<void> createFile(String dirPath, String fileName) async {
@@ -138,38 +158,41 @@ class FileProvider extends ChangeNotifier {
 
   // ── Private helpers ────────────────────────────────────────────────────────
 
+  /// Throws [FileSystemException] if the directory cannot be listed (e.g.
+  /// permission denied). Callers that want partial results (subfolder expand)
+  /// catch and store the error on the node; callers that open a root directory
+  /// let it bubble up to [openDirectory] which surfaces it via [_errorMessage].
   Future<List<FileNode>> _buildFileTree(String dirPath) async {
     final dir = Directory(dirPath);
-    if (!await dir.exists()) return [];
+    if (!await dir.exists()) {
+      throw FileSystemException('Directory does not exist', dirPath);
+    }
+
+    // Let this throw — do NOT catch here so callers can decide how to surface it.
+    final entities = await dir.list(followLinks: false).toList();
+
+    entities.sort((a, b) {
+      final aIsDir = a is Directory;
+      final bIsDir = b is Directory;
+      if (aIsDir && !bIsDir) return -1;
+      if (!aIsDir && bIsDir) return 1;
+      return a.path.split('/').last.compareTo(b.path.split('/').last);
+    });
 
     final List<FileNode> nodes = [];
-    try {
-      final entities = await dir.list(followLinks: false).toList();
-      entities.sort((a, b) {
-        final aIsDir = a is Directory;
-        final bIsDir = b is Directory;
-        if (aIsDir && !bIsDir) return -1;
-        if (!aIsDir && bIsDir) return 1;
-        return a.path.split('/').last.compareTo(b.path.split('/').last);
-      });
-
-      for (final entity in entities) {
-        final name = entity.path.split('/').last;
-        if (name.startsWith('.') ||
-            name == 'node_modules' ||
-            name == '__pycache__' ||
-            name == 'build') {
-          continue;
-        }
-
-        nodes.add(FileNode(
-          name: name,
-          path: entity.path,
-          isDirectory: entity is Directory,
-        ));
+    for (final entity in entities) {
+      final name = entity.path.split('/').last;
+      if (name.startsWith('.') ||
+          name == 'node_modules' ||
+          name == '__pycache__' ||
+          name == 'build') {
+        continue;
       }
-    } catch (e) {
-      debugPrint('Error listing $dirPath: $e');
+      nodes.add(FileNode(
+        name: name,
+        path: entity.path,
+        isDirectory: entity is Directory,
+      ));
     }
     return nodes;
   }

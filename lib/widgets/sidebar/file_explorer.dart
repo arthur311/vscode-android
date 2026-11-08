@@ -40,21 +40,23 @@ class FileExplorer extends StatelessWidget {
                           strokeWidth: 2,
                         ),
                       )
-                    : fileProvider.rootPath == null
-                        ? _EmptyExplorer(onOpenFolder: () {
-                            _openWithPermission(context, fileProvider);
-                          })
-                        : fileProvider.fileTree.isEmpty
-                            ? const Center(
-                                child: Text(
-                                  'Empty folder',
-                                  style: TextStyle(
-                                    color: VSCodeTheme.textDim,
-                                    fontSize: 12,
-                                  ),
-                                ),
+                    : fileProvider.errorMessage != null
+                        ? _ErrorBanner(
+                            message: fileProvider.errorMessage!,
+                            onRetry: () => _openWithPermission(context, fileProvider),
+                          )
+                        : fileProvider.rootPath == null
+                            ? _EmptyExplorer(
+                                onOpenFolder: () =>
+                                    _openWithPermission(context, fileProvider),
                               )
-                            : _FileTree(nodes: fileProvider.fileTree),
+                            : fileProvider.fileTree.isEmpty
+                                ? _EmptyFolder(
+                                    path: fileProvider.rootPath!,
+                                    onOpenFolder: () =>
+                                        _openWithPermission(context, fileProvider),
+                                  )
+                                : _FileTree(nodes: fileProvider.fileTree),
               ),
             ],
           ),
@@ -219,32 +221,141 @@ class _EmptyExplorer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.folder_open, size: 48, color: VSCodeTheme.textDim),
+            const SizedBox(height: 12),
+            const Text(
+              'No folder opened',
+              style: TextStyle(color: VSCodeTheme.textDim, fontSize: 13),
+            ),
+            const SizedBox(height: 8),
+            ElevatedButton(
+              onPressed: onOpenFolder,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: VSCodeTheme.accentBlue,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                textStyle: const TextStyle(fontSize: 12),
+              ),
+              child: const Text('Open Folder'),
+            ),
+            const SizedBox(height: 16),
+            _QuickAccessButton(),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown when the opened folder exists but is empty (after filtering).
+class _EmptyFolder extends StatelessWidget {
+  final String path;
+  final VoidCallback onOpenFolder;
+
+  const _EmptyFolder({required this.path, required this.onOpenFolder});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.folder_outlined, size: 36, color: VSCodeTheme.textDim),
+            const SizedBox(height: 8),
+            const Text(
+              'Empty folder',
+              style: TextStyle(color: VSCodeTheme.textDim, fontSize: 12),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              path.split('/').last,
+              style: const TextStyle(color: VSCodeTheme.textDim, fontSize: 11),
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 12),
+            TextButton.icon(
+              onPressed: onOpenFolder,
+              icon: const Icon(Icons.folder_open_outlined, size: 14,
+                  color: VSCodeTheme.accentBlue),
+              label: const Text('Open different folder',
+                  style: TextStyle(color: VSCodeTheme.accentBlue, fontSize: 12)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Error banner shown when listing the root directory failed.
+class _ErrorBanner extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+
+  const _ErrorBanner({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(12),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(
-            Icons.folder_open,
-            size: 48,
-            color: VSCodeTheme.textDim,
+          const Icon(Icons.error_outline, size: 36, color: Color(0xFFF44747)),
+          const SizedBox(height: 8),
+          Text(
+            message,
+            style: const TextStyle(
+                color: Color(0xFFF44747), fontSize: 12, height: 1.4),
+            textAlign: TextAlign.center,
           ),
           const SizedBox(height: 12),
-          const Text(
-            'No folder opened',
-            style: TextStyle(color: VSCodeTheme.textDim, fontSize: 13),
+          TextButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.folder_open_outlined,
+                size: 14, color: VSCodeTheme.accentBlue),
+            label: const Text('Open folder',
+                style: TextStyle(color: VSCodeTheme.accentBlue, fontSize: 12)),
           ),
           const SizedBox(height: 8),
-          ElevatedButton(
-            onPressed: onOpenFolder,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: VSCodeTheme.accentBlue,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              textStyle: const TextStyle(fontSize: 12),
-            ),
-            child: const Text('Open Folder'),
-          ),
+          _QuickAccessButton(),
         ],
       ),
+    );
+  }
+}
+
+/// Shortcut button to /storage/emulated/0 — only useful once MANAGE_EXTERNAL_STORAGE
+/// is granted. Shown in empty-state and error-state panels.
+class _QuickAccessButton extends StatelessWidget {
+  const _QuickAccessButton();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<bool>(
+      future: StoragePermissionService.hasPermission(),
+      builder: (ctx, snap) {
+        final hasAccess = snap.data ?? false;
+        if (!hasAccess) return const SizedBox.shrink();
+        return TextButton.icon(
+          onPressed: () {
+            context.read<FileProvider>().openDirectory('/storage/emulated/0');
+          },
+          icon: const Icon(Icons.storage_outlined,
+              size: 14, color: VSCodeTheme.textDim),
+          label: const Text(
+            'Open /storage/emulated/0',
+            style: TextStyle(color: VSCodeTheme.textDim, fontSize: 11),
+          ),
+        );
+      },
     );
   }
 }
@@ -339,12 +450,33 @@ class _FileNodeTileState extends State<_FileNodeTile> {
             ),
           ),
         ),
-        if (node.isDirectory && node.isExpanded && node.children.isNotEmpty)
-          Column(
-            children: node.children
-                .map((child) => _FileNodeTile(node: child, depth: widget.depth + 1))
-                .toList(),
-          ),
+        if (node.isDirectory && node.isExpanded) ...[
+          if (node.listError != null)
+            Padding(
+              padding: EdgeInsets.only(
+                  left: 8.0 + (widget.depth + 1) * 12.0, right: 8, top: 2, bottom: 2),
+              child: Row(
+                children: [
+                  const Icon(Icons.lock_outline, size: 12, color: Color(0xFFF44747)),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      node.listError!,
+                      style: const TextStyle(
+                          color: Color(0xFFF44747), fontSize: 11, height: 1.3),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else if (node.children.isNotEmpty)
+            Column(
+              children: node.children
+                  .map((child) =>
+                      _FileNodeTile(node: child, depth: widget.depth + 1))
+                  .toList(),
+            ),
+        ],
       ],
     );
   }

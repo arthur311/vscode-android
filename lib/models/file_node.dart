@@ -4,6 +4,8 @@ class FileNode {
   final bool isDirectory;
   List<FileNode> children;
   bool isExpanded;
+  /// Non-null when listing this directory's children failed (e.g. EACCES).
+  String? listError;
 
   FileNode({
     required this.name,
@@ -11,11 +13,13 @@ class FileNode {
     required this.isDirectory,
     List<FileNode>? children,
     this.isExpanded = false,
+    this.listError,
   }) : children = children ?? [];
 
   FileNode copyWith({
     List<FileNode>? children,
     bool? isExpanded,
+    String? listError,
   }) {
     return FileNode(
       name: name,
@@ -23,6 +27,7 @@ class FileNode {
       isDirectory: isDirectory,
       children: children ?? this.children,
       isExpanded: isExpanded ?? this.isExpanded,
+      listError: listError ?? this.listError,
     );
   }
 

@@ -43,3 +43,6 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# DevTools — IDE-generated, not project config
+devtools_options.yaml
