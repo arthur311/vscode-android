@@ -1,22 +1,17 @@
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter/services.dart';
 
-/// Handles the MANAGE_EXTERNAL_STORAGE permission flow for Android 11+.
-///
-/// This permission cannot be granted via a standard runtime dialog — the OS
-/// requires the user to navigate to Settings > Apps > Special app access >
-/// All files access. This service checks the current state, shows an
-/// explanation dialog, then opens the correct Settings screen.
+const _channel = MethodChannel('com.example.vscode_android/storage');
+
 class StoragePermissionService {
-  /// Returns true if the app currently has all-files access.
   static Future<bool> hasPermission() async {
-    return Permission.manageExternalStorage.isGranted;
+    final result = await _channel.invokeMethod<bool>('hasManageStoragePermission');
+    return result ?? false;
   }
 
-  /// Checks permission and, if not granted, shows an explanation dialog and
-  /// opens Settings. Returns true if permission is already granted (or becomes
-  /// granted after the user returns). Call this before accessing
-  /// /storage/emulated/0.
+  /// Shows an explanation dialog, then opens the system Settings screen for
+  /// MANAGE_EXTERNAL_STORAGE. Returns true only if already granted (the user
+  /// must return from Settings and retry — we cannot observe the grant live).
   static Future<bool> requestPermission(BuildContext context) async {
     if (await hasPermission()) return true;
 
@@ -40,33 +35,24 @@ class StoragePermissionService {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text(
-              'Not now',
-              style: TextStyle(color: Color(0xFF9CDCFE)),
-            ),
+            child: const Text('Not now',
+                style: TextStyle(color: Color(0xFF9CDCFE))),
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text(
-              'Open Settings',
-              style: TextStyle(color: Color(0xFF007ACC)),
-            ),
+            child: const Text('Open Settings',
+                style: TextStyle(color: Color(0xFF007ACC))),
           ),
         ],
       ),
     );
 
     if (shouldOpen != true) return false;
-
-    // Opens android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION
-    await Permission.manageExternalStorage.request();
-
-    // Re-check after user returns from Settings
-    return Permission.manageExternalStorage.isGranted;
+    await _channel.invokeMethod<void>('openManageStorageSettings');
+    // Re-check after user returns from Settings.
+    return hasPermission();
   }
 
-  /// Shows a non-dismissible banner when permission was denied, so the user
-  /// knows why the file explorer is empty.
   static void showDeniedSnackBar(BuildContext context) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -79,7 +65,8 @@ class StoragePermissionService {
         action: SnackBarAction(
           label: 'Open Settings',
           textColor: const Color(0xFF007ACC),
-          onPressed: openAppSettings,
+          onPressed: () =>
+              _channel.invokeMethod<void>('openManageStorageSettings'),
         ),
         duration: const Duration(seconds: 6),
       ),
