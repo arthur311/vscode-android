@@ -1,7 +1,11 @@
 import 'dart:io';
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import '../models/file_node.dart';
+import '../services/prefs_service.dart';
+
+const _kLastDirKey = 'last_opened_directory';
 
 class FileProvider extends ChangeNotifier {
   List<FileNode> _fileTree = [];
@@ -20,111 +24,73 @@ class FileProvider extends ChangeNotifier {
   }
 
   FileProvider() {
-    _loadDefaultPath();
+    _restoreLastDirectory();
   }
 
-  Future<void> _loadDefaultPath() async {
-    try {
-      Directory? dir;
-      if (Platform.isAndroid) {
-        final extDirs = await getExternalStorageDirectories();
-        if (extDirs != null && extDirs.isNotEmpty) {
-          dir = extDirs.first;
-        } else {
-          dir = await getApplicationDocumentsDirectory();
-        }
-      } else {
-        dir = await getApplicationDocumentsDirectory();
-      }
+  // ── Persistence ────────────────────────────────────────────────────────────
 
-      if (await dir.exists()) {
-        await openDirectory(dir.path);
-      }
-    } catch (e) {
-      debugPrint('Error loading default path: $e');
+  Future<void> _restoreLastDirectory() async {
+    await PrefsService.instance.load();
+    final saved = PrefsService.instance.getString(_kLastDirKey);
+    if (saved != null && await Directory(saved).exists()) {
+      await openDirectory(saved);
+    } else {
+      // Fall back to app documents dir so explorer is not empty on first run
+      final fallback = await getApplicationDocumentsDirectory();
+      await openDirectory(fallback.path);
     }
   }
 
-  Future<void> pickAndOpenDirectory() async {
-    // Without file_picker we open the app documents directory or prompt
+  Future<void> _saveLastDirectory(String path) async {
+    await PrefsService.instance.setString(_kLastDirKey, path);
+  }
+
+  // ── Public API ─────────────────────────────────────────────────────────────
+
+  /// Opens the OS folder-picker dialog (SAF on Android 11+).
+  /// Returns true if the user picked a directory, false if they cancelled.
+  Future<bool> pickAndOpenDirectory() async {
     try {
-      await openDefaultDirectory();
+      // getDirectoryPath() triggers the SAF directory picker on Android.
+      // On Android 11+ the user CANNOT pick:
+      //   - The storage root (/storage/emulated/0) directly
+      //   - The Download folder directly (OS restriction, not our bug)
+      // They can pick any sub-folder of those locations.
+      final picked = await getDirectoryPath();
+      if (picked == null) return false; // user cancelled
+
+      await openDirectory(picked);
+      return true;
     } catch (e) {
-      _errorMessage = 'Error picking directory: $e';
+      _errorMessage = 'Could not open folder picker: $e';
       notifyListeners();
+      return false;
     }
   }
 
   Future<void> openDirectory(String path) async {
-    try {
-      _isLoading = true;
-      _errorMessage = null;
-      notifyListeners();
+    _isLoading = true;
+    _errorMessage = null;
+    notifyListeners();
 
+    try {
       _rootPath = path;
       _fileTree = await _buildFileTree(path);
-
-      _isLoading = false;
-      notifyListeners();
+      await _saveLastDirectory(path);
     } catch (e) {
-      _errorMessage = 'Error opening directory: $e';
-      _isLoading = false;
-      notifyListeners();
+      _errorMessage = 'Cannot open directory: $e';
     }
+
+    _isLoading = false;
+    notifyListeners();
   }
 
-  Future<List<FileNode>> _buildFileTree(String dirPath) async {
-    final dir = Directory(dirPath);
-    if (!await dir.exists()) return [];
-
-    final List<FileNode> nodes = [];
-
-    try {
-      final entities = await dir.list(followLinks: false).toList();
-
-      entities.sort((a, b) {
-        final aIsDir = a is Directory;
-        final bIsDir = b is Directory;
-        if (aIsDir && !bIsDir) return -1;
-        if (!aIsDir && bIsDir) return 1;
-        return a.path.split('/').last.compareTo(b.path.split('/').last);
-      });
-
-      for (final entity in entities) {
-        final name = entity.path.split('/').last;
-
-        // Skip hidden files/folders and common ignore patterns
-        if (name.startsWith('.') ||
-            name == 'node_modules' ||
-            name == '__pycache__' ||
-            name == 'build') {
-          continue;
-        }
-
-        if (entity is Directory) {
-          nodes.add(FileNode(
-            name: name,
-            path: entity.path,
-            isDirectory: true,
-          ));
-        } else if (entity is File) {
-          nodes.add(FileNode(
-            name: name,
-            path: entity.path,
-            isDirectory: false,
-          ));
-        }
-      }
-    } catch (e) {
-      debugPrint('Error listing directory $dirPath: $e');
-    }
-
-    return nodes;
+  Future<void> refreshTree() async {
+    if (_rootPath != null) await openDirectory(_rootPath!);
   }
 
   Future<void> toggleDirectory(FileNode node) async {
     if (!node.isDirectory) return;
-
     if (node.isExpanded) {
       node.isExpanded = false;
     } else {
@@ -136,55 +102,22 @@ class FileProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> refreshTree() async {
-    if (_rootPath != null) {
-      await openDirectory(_rootPath!);
-    }
-  }
-
-  Future<void> openDefaultDirectory() async {
-    try {
-      Directory? dir;
-      if (Platform.isAndroid) {
-        // Try public storage first
-        final extDir = Directory('/storage/emulated/0');
-        if (await extDir.exists()) {
-          dir = extDir;
-        } else {
-          final extDirs = await getExternalStorageDirectories();
-          if (extDirs != null && extDirs.isNotEmpty) {
-            dir = extDirs.first;
-          }
-        }
-      }
-      dir ??= await getApplicationDocumentsDirectory();
-
-      if (await dir.exists()) {
-        await openDirectory(dir.path);
-      }
-    } catch (e) {
-      debugPrint('Error opening default directory: $e');
-    }
-  }
-
   Future<void> createFile(String dirPath, String fileName) async {
     try {
-      final file = File('$dirPath/$fileName');
-      await file.create(recursive: true);
+      await File('$dirPath/$fileName').create(recursive: true);
       await refreshTree();
     } catch (e) {
-      _errorMessage = 'Error creating file: $e';
+      _errorMessage = 'Cannot create file: $e';
       notifyListeners();
     }
   }
 
   Future<void> createFolder(String dirPath, String folderName) async {
     try {
-      final dir = Directory('$dirPath/$folderName');
-      await dir.create(recursive: true);
+      await Directory('$dirPath/$folderName').create(recursive: true);
       await refreshTree();
     } catch (e) {
-      _errorMessage = 'Error creating folder: $e';
+      _errorMessage = 'Cannot create folder: $e';
       notifyListeners();
     }
   }
@@ -198,8 +131,46 @@ class FileProvider extends ChangeNotifier {
       }
       await refreshTree();
     } catch (e) {
-      _errorMessage = 'Error deleting: $e';
+      _errorMessage = 'Cannot delete: $e';
       notifyListeners();
     }
+  }
+
+  // ── Private helpers ────────────────────────────────────────────────────────
+
+  Future<List<FileNode>> _buildFileTree(String dirPath) async {
+    final dir = Directory(dirPath);
+    if (!await dir.exists()) return [];
+
+    final List<FileNode> nodes = [];
+    try {
+      final entities = await dir.list(followLinks: false).toList();
+      entities.sort((a, b) {
+        final aIsDir = a is Directory;
+        final bIsDir = b is Directory;
+        if (aIsDir && !bIsDir) return -1;
+        if (!aIsDir && bIsDir) return 1;
+        return a.path.split('/').last.compareTo(b.path.split('/').last);
+      });
+
+      for (final entity in entities) {
+        final name = entity.path.split('/').last;
+        if (name.startsWith('.') ||
+            name == 'node_modules' ||
+            name == '__pycache__' ||
+            name == 'build') {
+          continue;
+        }
+
+        nodes.add(FileNode(
+          name: name,
+          path: entity.path,
+          isDirectory: entity is Directory,
+        ));
+      }
+    } catch (e) {
+      debugPrint('Error listing $dirPath: $e');
+    }
+    return nodes;
   }
 }

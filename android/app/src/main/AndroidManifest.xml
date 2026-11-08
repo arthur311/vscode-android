@@ -1,7 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+    <!-- INTERNET untuk keperluan future network features -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!--
+        MANAGE_EXTERNAL_STORAGE (API 30+): izin "All files access" untuk baca/tulis
+        semua file di storage. Tidak bisa di-request via requestPermissions() biasa —
+        harus arahkan user ke Settings > Apps > Special app access > All files access.
+        Dideklarasikan agar OS tahu app butuh ini; alur request ada di kode Dart.
+    -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
     <application
         android:label="vscode_android"

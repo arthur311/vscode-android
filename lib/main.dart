@@ -5,9 +5,11 @@ import 'theme/vscode_theme.dart';
 import 'providers/editor_provider.dart';
 import 'providers/file_provider.dart';
 import 'screens/main_screen.dart';
+import 'services/prefs_service.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await PrefsService.instance.load();
 
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,

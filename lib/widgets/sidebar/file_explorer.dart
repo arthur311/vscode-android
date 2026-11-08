@@ -4,9 +4,23 @@ import '../../theme/vscode_theme.dart';
 import '../../models/file_node.dart';
 import '../../providers/file_provider.dart';
 import '../../providers/editor_provider.dart';
+import '../../services/storage_permission_service.dart';
 
 class FileExplorer extends StatelessWidget {
   const FileExplorer({super.key});
+
+  Future<void> _openWithPermission(
+      BuildContext context, FileProvider fileProvider) async {
+    final granted =
+        await StoragePermissionService.requestPermission(context);
+    if (!granted && context.mounted) {
+      StoragePermissionService.showDeniedSnackBar(context);
+    }
+    // Even if denied, still open picker — user may pick from app-private dirs
+    if (context.mounted) {
+      await fileProvider.pickAndOpenDirectory();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -28,7 +42,7 @@ class FileExplorer extends StatelessWidget {
                       )
                     : fileProvider.rootPath == null
                         ? _EmptyExplorer(onOpenFolder: () {
-                            fileProvider.pickAndOpenDirectory();
+                            _openWithPermission(context, fileProvider);
                           })
                         : fileProvider.fileTree.isEmpty
                             ? const Center(
@@ -93,7 +107,15 @@ class _ExplorerHeader extends StatelessWidget {
           _HeaderAction(
             icon: Icons.folder_open_outlined,
             tooltip: 'Open Folder',
-            onTap: () => fileProvider.pickAndOpenDirectory(),
+            onTap: () async {
+              final granted = await StoragePermissionService.requestPermission(context);
+              if (!granted && context.mounted) {
+                StoragePermissionService.showDeniedSnackBar(context);
+              }
+              if (context.mounted) {
+                await fileProvider.pickAndOpenDirectory();
+              }
+            },
           ),
           _HeaderAction(
             icon: Icons.refresh,
