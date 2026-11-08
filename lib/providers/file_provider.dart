@@ -11,12 +11,27 @@ class FileProvider extends ChangeNotifier {
   List<FileNode> _fileTree = [];
   String? _rootPath;
   bool _isLoading = false;
-  String? _errorMessage;
+
+  /// Set when openDirectory or pickAndOpenDirectory fails. Triggers the
+  /// full-screen error banner. Cleared at the start of every openDirectory.
+  String? _rootError;
+
+  /// Set when a file operation (create/delete) fails. Consumed once by the
+  /// UI as a SnackBar so it never hides the file tree. Cleared after read.
+  String? _opError;
 
   List<FileNode> get fileTree => _fileTree;
   String? get rootPath => _rootPath;
   bool get isLoading => _isLoading;
-  String? get errorMessage => _errorMessage;
+  String? get rootError => _rootError;
+
+  /// Returns the pending operation error and clears it so the UI shows it
+  /// exactly once (consume-once pattern).
+  String? consumeOpError() {
+    final e = _opError;
+    _opError = null;
+    return e;
+  }
 
   String get rootName {
     if (_rootPath == null) return 'No folder opened';
@@ -35,7 +50,6 @@ class FileProvider extends ChangeNotifier {
     if (saved != null && await Directory(saved).exists()) {
       await openDirectory(saved);
     } else {
-      // Fall back to app documents dir so explorer is not empty on first run
       final fallback = await getApplicationDocumentsDirectory();
       await openDirectory(fallback.path);
     }
@@ -49,20 +63,19 @@ class FileProvider extends ChangeNotifier {
 
   /// Opens the OS folder-picker dialog (SAF on Android 11+).
   /// Returns true if the user picked a directory, false if they cancelled.
+  ///
+  /// SAF restrictions on Android 11+ (OS, not our code):
+  ///   - /storage/emulated/0 root cannot be picked directly.
+  ///   - Downloads/ is blocked on many OEMs (Samsung, Xiaomi).
+  ///   - Any sub-folder of those locations can be picked.
   Future<bool> pickAndOpenDirectory() async {
     try {
-      // getDirectoryPath() triggers the SAF directory picker on Android.
-      // On Android 11+ the user CANNOT pick:
-      //   - The storage root (/storage/emulated/0) directly
-      //   - The Download folder directly (OS restriction, not our bug)
-      // They can pick any sub-folder of those locations.
       final picked = await getDirectoryPath();
-      if (picked == null) return false; // user cancelled
-
+      if (picked == null) return false;
       await openDirectory(picked);
       return true;
     } catch (e) {
-      _errorMessage = 'Could not open folder picker: $e';
+      _rootError = 'Could not open folder picker: ${_friendlyError(e)}';
       notifyListeners();
       return false;
     }
@@ -70,7 +83,7 @@ class FileProvider extends ChangeNotifier {
 
   Future<void> openDirectory(String path) async {
     _isLoading = true;
-    _errorMessage = null;
+    _rootError = null;
     notifyListeners();
 
     try {
@@ -78,7 +91,7 @@ class FileProvider extends ChangeNotifier {
       _fileTree = await _buildFileTree(path);
       await _saveLastDirectory(path);
     } catch (e) {
-      _errorMessage = _friendlyError(e);
+      _rootError = _friendlyError(e);
       _fileTree = [];
     }
 
@@ -101,7 +114,6 @@ class FileProvider extends ChangeNotifier {
         try {
           node.children = await _buildFileTree(node.path);
         } catch (e) {
-          // Surface the error on the node so the UI can show it inline.
           node.listError = _friendlyError(e);
           node.children = [];
         }
@@ -110,24 +122,14 @@ class FileProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Converts a raw exception into a short, user-readable message.
-  String _friendlyError(Object e) {
-    final msg = e.toString();
-    if (msg.contains('Permission denied') || msg.contains('EACCES')) {
-      return 'Permission denied — grant "All files access" in Settings';
-    }
-    if (msg.contains('does not exist') || msg.contains('ENOENT')) {
-      return 'Folder no longer exists';
-    }
-    return 'Cannot read folder: $msg';
-  }
-
+  /// File operations use _opError (SnackBar) not _rootError (banner),
+  /// so a failed create/delete never hides the existing file tree.
   Future<void> createFile(String dirPath, String fileName) async {
     try {
       await File('$dirPath/$fileName').create(recursive: true);
       await refreshTree();
     } catch (e) {
-      _errorMessage = 'Cannot create file: $e';
+      _opError = 'Cannot create file "$fileName": ${_friendlyError(e)}';
       notifyListeners();
     }
   }
@@ -137,7 +139,7 @@ class FileProvider extends ChangeNotifier {
       await Directory('$dirPath/$folderName').create(recursive: true);
       await refreshTree();
     } catch (e) {
-      _errorMessage = 'Cannot create folder: $e';
+      _opError = 'Cannot create folder "$folderName": ${_friendlyError(e)}';
       notifyListeners();
     }
   }
@@ -151,24 +153,38 @@ class FileProvider extends ChangeNotifier {
       }
       await refreshTree();
     } catch (e) {
-      _errorMessage = 'Cannot delete: $e';
+      _opError = 'Cannot delete "${node.name}": ${_friendlyError(e)}';
       notifyListeners();
     }
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
 
-  /// Throws [FileSystemException] if the directory cannot be listed (e.g.
-  /// permission denied). Callers that want partial results (subfolder expand)
-  /// catch and store the error on the node; callers that open a root directory
-  /// let it bubble up to [openDirectory] which surfaces it via [_errorMessage].
+  /// Converts an exception to a short user-readable message.
+  /// Checks [FileSystemException.osError?.errorCode] first (POSIX codes),
+  /// falls back to a generic message rather than leaking raw exception text.
+  String _friendlyError(Object e) {
+    if (e is FileSystemException) {
+      final code = e.osError?.errorCode;
+      if (code == 13) return 'Permission denied — grant "All files access" in Settings';
+      if (code == 2)  return 'File or folder no longer exists';
+      if (code == 17) return 'File already exists';
+      if (code == 28) return 'No space left on device';
+      // Known non-POSIX message from _buildFileTree when dir.exists() is false
+      if (e.message.contains('does not exist')) return 'Folder no longer exists';
+    }
+    // Do not expose raw stack or internal paths to the user.
+    return 'Unexpected error (${e.runtimeType})';
+  }
+
+  /// Throws [FileSystemException] when listing fails so callers decide how to
+  /// surface the error. Never swallows exceptions silently.
   Future<List<FileNode>> _buildFileTree(String dirPath) async {
     final dir = Directory(dirPath);
     if (!await dir.exists()) {
       throw FileSystemException('Directory does not exist', dirPath);
     }
 
-    // Let this throw — do NOT catch here so callers can decide how to surface it.
     final entities = await dir.list(followLinks: false).toList();
 
     entities.sort((a, b) {

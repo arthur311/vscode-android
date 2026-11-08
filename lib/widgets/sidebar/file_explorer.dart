@@ -6,17 +6,61 @@ import '../../providers/file_provider.dart';
 import '../../providers/editor_provider.dart';
 import '../../services/storage_permission_service.dart';
 
-class FileExplorer extends StatelessWidget {
+class FileExplorer extends StatefulWidget {
   const FileExplorer({super.key});
+
+  @override
+  State<FileExplorer> createState() => _FileExplorerState();
+}
+
+class _FileExplorerState extends State<FileExplorer> {
+  @override
+  void initState() {
+    super.initState();
+    // Listen for op errors (create/delete) and show them as SnackBars so they
+    // never replace the file tree with a full-screen error banner.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<FileProvider>().addListener(_onProviderChange);
+    });
+  }
+
+  @override
+  void dispose() {
+    context.read<FileProvider>().removeListener(_onProviderChange);
+    super.dispose();
+  }
+
+  void _onProviderChange() {
+    final err = context.read<FileProvider>().consumeOpError();
+    if (err != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFF3C3C3C),
+          behavior: SnackBarBehavior.floating,
+          content: Row(
+            children: [
+              const Icon(Icons.error_outline, size: 14, color: Color(0xFFF44747)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  err,
+                  style: const TextStyle(color: Color(0xFFD4D4D4), fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
 
   Future<void> _openWithPermission(
       BuildContext context, FileProvider fileProvider) async {
-    final granted =
-        await StoragePermissionService.requestPermission(context);
+    final granted = await StoragePermissionService.requestPermission(context);
     if (!granted && context.mounted) {
       StoragePermissionService.showDeniedSnackBar(context);
     }
-    // Even if denied, still open picker — user may pick from app-private dirs
     if (context.mounted) {
       await fileProvider.pickAndOpenDirectory();
     }
@@ -40,10 +84,11 @@ class FileExplorer extends StatelessWidget {
                           strokeWidth: 2,
                         ),
                       )
-                    : fileProvider.errorMessage != null
+                    : fileProvider.rootError != null
                         ? _ErrorBanner(
-                            message: fileProvider.errorMessage!,
-                            onRetry: () => _openWithPermission(context, fileProvider),
+                            message: fileProvider.rootError!,
+                            onRetry: () =>
+                                _openWithPermission(context, fileProvider),
                           )
                         : fileProvider.rootPath == null
                             ? _EmptyExplorer(
@@ -452,12 +497,17 @@ class _FileNodeTileState extends State<_FileNodeTile> {
         ),
         if (node.isDirectory && node.isExpanded) ...[
           if (node.listError != null)
+            // Permission denied or other listing error — show inline.
             Padding(
               padding: EdgeInsets.only(
-                  left: 8.0 + (widget.depth + 1) * 12.0, right: 8, top: 2, bottom: 2),
+                  left: 8.0 + (widget.depth + 1) * 12.0,
+                  right: 8,
+                  top: 2,
+                  bottom: 2),
               child: Row(
                 children: [
-                  const Icon(Icons.lock_outline, size: 12, color: Color(0xFFF44747)),
+                  const Icon(Icons.lock_outline,
+                      size: 12, color: Color(0xFFF44747)),
                   const SizedBox(width: 4),
                   Expanded(
                     child: Text(
@@ -469,7 +519,23 @@ class _FileNodeTileState extends State<_FileNodeTile> {
                 ],
               ),
             )
-          else if (node.children.isNotEmpty)
+          else if (node.children.isEmpty)
+            // Listing succeeded but nothing survived the filter.
+            Padding(
+              padding: EdgeInsets.only(
+                  left: 8.0 + (widget.depth + 1) * 12.0,
+                  right: 8,
+                  top: 2,
+                  bottom: 2),
+              child: const Text(
+                'Empty folder',
+                style: TextStyle(
+                    color: VSCodeTheme.textDim,
+                    fontSize: 11,
+                    fontStyle: FontStyle.italic),
+              ),
+            )
+          else
             Column(
               children: node.children
                   .map((child) =>
